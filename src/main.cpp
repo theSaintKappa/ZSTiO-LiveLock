@@ -7,6 +7,10 @@
 #define ROOM_NAME "library"
 
 #define REED_SWITCH_PIN 14
+#define LED_BUILTIN 2
+
+TaskHandle_t ledTaskHandle = NULL;
+volatile bool flashLED = false;
 
 WiFiClientSecure ssl_client;
 using AsyncClient = AsyncClientClass;
@@ -21,6 +25,8 @@ AsyncResult firestoreResult;
 bool lastReedState = false;
 unsigned long lastChangeTime = 0;
 
+void ledFlashTask(void* parameter);
+void WiFiEvent(WiFiEvent_t event);
 void processData(AsyncResult& aResult);
 void updateFirestoreStatus(bool isOpen, String timestampString);
 void logSwitchChange(bool newState, String timestampString);
@@ -30,23 +36,16 @@ String getTimestampString(time_t seconds);
 void setup() {
     Serial.begin(115200);
 
+    pinMode(LED_BUILTIN, OUTPUT);
+    digitalWrite(LED_BUILTIN, LOW);
+
     pinMode(REED_SWITCH_PIN, INPUT_PULLUP);
     lastReedState = digitalRead(REED_SWITCH_PIN);
 
+    xTaskCreatePinnedToCore(ledFlashTask, "LED_Flash", 2048, NULL, 1, &ledTaskHandle, 0);
+
+    WiFi.onEvent(WiFiEvent);
     WiFi.begin(AP_SSID, AP_PASSWORD);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(300);
-        Serial.print(".");
-    }
-    Serial.println("\nWiFi Connected");
-
-    ssl_client.setInsecure();
-    configTime(0, 0, "pool.ntp.org");
-
-    app.setTime(getTime());
-
-    initializeApp(async_client, app, getAuth(sa_auth), processData, "AuthTask");
-    app.getApp<Firestore::Documents>(Docs);
 }
 
 void loop() {
@@ -63,6 +62,57 @@ void loop() {
 
     processData(firestoreResult);
     delay(500);
+}
+
+void ledFlashTask(void* parameter) {
+    pinMode(LED_BUILTIN, OUTPUT);
+
+    for (;;) {
+        if (flashLED) {
+            digitalWrite(LED_BUILTIN, HIGH);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            digitalWrite(LED_BUILTIN, LOW);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        else {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+}
+
+void WiFiEvent(WiFiEvent_t event) {
+    switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_START:
+        Serial.println("WiFi connecting...");
+        flashLED = true;
+        break;
+
+    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+        Serial.println("WiFi connected!");
+        flashLED = false;
+        delay(500); // Without this, sometimes the LED doesn't turn on after previously losing connection, race condition probably
+        digitalWrite(LED_BUILTIN, HIGH);
+        break;
+
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+        Serial.println("WiFi ready! IP: " + WiFi.localIP().toString());
+        digitalWrite(LED_BUILTIN, HIGH);
+
+        ssl_client.setInsecure();
+
+        configTime(0, 0, "pool.ntp.org");
+        app.setTime(getTime());
+        
+        initializeApp(async_client, app, getAuth(sa_auth), processData, "AuthTask");
+        app.getApp<Firestore::Documents>(Docs);
+        break;
+
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+        Serial.println("WiFi lost connection");
+        flashLED = true;
+        WiFi.reconnect();
+        break;
+    }
 }
 
 void processData(AsyncResult& aResult) {
