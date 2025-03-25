@@ -22,8 +22,8 @@ bool lastReedState = false;
 unsigned long lastChangeTime = 0;
 
 void processData(AsyncResult& aResult);
-void updateFirestoreStatus(bool isOpen);
-void logSwitchChange(bool newState);
+void updateFirestoreStatus(bool isOpen, String timestampString);
+void logSwitchChange(bool newState, String timestampString);
 time_t getTime();
 String getTimestampString(time_t seconds);
 
@@ -53,9 +53,9 @@ void loop() {
     app.loop();
     bool currentReedState = !digitalRead(REED_SWITCH_PIN);
     if (currentReedState != lastReedState) {
-        Serial.printf("Reed Switch State: %s\n", currentReedState ? "Open" : "Closed");
-        updateFirestoreStatus(!currentReedState);
-        logSwitchChange(!currentReedState);
+        String timestampString = getTimestampString(getTime());
+        updateFirestoreStatus(!currentReedState, timestampString);
+        logSwitchChange(!currentReedState, timestampString);
 
         lastReedState = currentReedState;
         lastChangeTime = millis();
@@ -79,22 +79,27 @@ void processData(AsyncResult& aResult) {
     }
 }
 
-void updateFirestoreStatus(bool isOpen) {
-    Document<Values::Value> doc("room", Values::Value(Values::StringValue(ROOM_NAME)));
-    doc.add("open", Values::Value(Values::BooleanValue(isOpen)));
+void updateFirestoreStatus(bool isOpen, String timestampString) {
+    Document<Values::Value> stateDoc;
+    stateDoc.add("roomName", Values::Value(Values::StringValue(ROOM_NAME)));
+    stateDoc.add("state", Values::Value(Values::StringValue(isOpen ? "open" : "closed")));
+    stateDoc.add("isOpen", Values::Value(Values::BooleanValue(isOpen)));
+    stateDoc.add("updatedAt", Values::Value(Values::TimestampValue(timestampString)));
 
-    PatchDocumentOptions patchOptions(DocumentMask("room,open"), DocumentMask(), Precondition());
+    PatchDocumentOptions patchOptions(DocumentMask("roomName,state,isOpen,updatedAt"), DocumentMask(), Precondition());
 
     String docPath = "status/" + String(ROOM_NAME);
-    Docs.patch(async_client, Firestore::Parent(PROJECT_ID), docPath, patchOptions, doc, processData, "StatusUpdateTask");
+    Docs.patch(async_client, Firestore::Parent(PROJECT_ID), docPath, patchOptions, stateDoc, processData, "StatusUpdateTask");
 
     Serial.printf("Status Update: %s\n", isOpen ? "Open" : "Closed");
 }
 
-void logSwitchChange(bool newState) {
-    Document<Values::Value> logDoc("newState", Values::Value(Values::BooleanValue(newState)));
-    logDoc.add("timestamp", Values::Value(Values::TimestampValue(getTimestampString(getTime()))));
-    logDoc.add("room", Values::Value(Values::StringValue("library")));
+void logSwitchChange(bool newState, String timestampString) {
+    Document<Values::Value> logDoc;
+    logDoc.add("roomName", Values::Value(Values::StringValue(ROOM_NAME)));
+    logDoc.add("newState", Values::Value(Values::StringValue(newState ? "open" : "closed")));
+    logDoc.add("isOpen", Values::Value(Values::BooleanValue(newState)));
+    logDoc.add("timestamp", Values::Value(Values::TimestampValue(timestampString)));
 
     Docs.createDocument(async_client, Firestore::Parent(PROJECT_ID), "logs", DocumentMask(), logDoc, processData, "LogCreationTask");
 }
