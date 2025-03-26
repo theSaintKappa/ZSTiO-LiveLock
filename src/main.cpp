@@ -6,6 +6,9 @@
 
 #define ROOM_NAME "library"
 
+#define DEBOUNCE_DELAY 50       // Filters out quick electrical noise
+#define STATE_STABLE_DELAY 500  // Prevents rapid state changes
+
 #define REED_SWITCH_PIN 14
 #define LED_BUILTIN 2
 
@@ -23,7 +26,10 @@ Firestore::Documents Docs;
 AsyncResult firestoreResult;
 
 bool lastReedState = false;
-unsigned long lastChangeTime = 0;
+bool currentReading = false;
+unsigned long lastDebounceTime = 0;
+unsigned long lastStateChangeTime = 0;
+bool stateChanged = false;
 
 void ledFlashTask(void* parameter);
 void WiFiEvent(WiFiEvent_t event);
@@ -50,18 +56,34 @@ void setup() {
 
 void loop() {
     app.loop();
-    bool currentReedState = !digitalRead(REED_SWITCH_PIN);
-    if (currentReedState != lastReedState) {
-        String timestampString = getTimestampString(getTime());
-        updateFirestoreStatus(!currentReedState, timestampString);
-        logSwitchChange(!currentReedState, timestampString);
 
-        lastReedState = currentReedState;
-        lastChangeTime = millis();
+    bool reading = !digitalRead(REED_SWITCH_PIN);
+
+    // Check if reading has changed
+    if (reading != currentReading) {
+        // Reset debounce timer
+        lastDebounceTime = millis();
+        currentReading = reading;
+    }
+
+    // Check if debounce delay has passed
+    unsigned long currentMillis = millis();
+    if ((currentMillis - lastDebounceTime) > DEBOUNCE_DELAY) {
+        // Check if the state is different from the last stable state and enough time has passed since the last state change
+        if (reading != lastReedState && (currentMillis - lastStateChangeTime) > STATE_STABLE_DELAY) {
+            if (app.ready()) {
+                String timestampString = getTimestampString(getTime());
+                updateFirestoreStatus(!reading, timestampString);
+                logSwitchChange(!reading, timestampString);
+            }
+
+            // Update last stable state
+            lastReedState = reading;
+            lastStateChangeTime = currentMillis;
+        }
     }
 
     processData(firestoreResult);
-    delay(500);
 }
 
 void ledFlashTask(void* parameter) {
@@ -102,7 +124,7 @@ void WiFiEvent(WiFiEvent_t event) {
 
         configTime(0, 0, "pool.ntp.org");
         app.setTime(getTime());
-        
+
         initializeApp(async_client, app, getAuth(sa_auth), processData, "AuthTask");
         app.getApp<Firestore::Documents>(Docs);
         break;
